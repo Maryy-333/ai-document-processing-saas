@@ -1,0 +1,17 @@
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+# Alembic revision scripts under migrations/versions/ are machine-generated
+# by `alembic revision --autogenerate` and should not be hand-reformatted to
+# satisfy lint rules — reformatting generated migrations invites accidental
+# edits to DDL. migrations/env.py (hand-written) is still linted normally.
+extend-exclude = ["migrations/versions"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+# B008: Depends()/FastAPI dependency-injection defaults are the required
+# idiom in this framework, not a real bug — ignored intentionally, project-wide.
+ignore = ["B008"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
