@@ -46,3 +46,16 @@ def db_session() -> Session:
         if transaction.is_active:
             transaction.rollback()
         connection.close()
+
+
+@pytest.fixture()
+def local_storage(tmp_path):
+    """
+    Isolated LocalStorageService rooted in a pytest tmp_path — never touches
+    the real configured storage_dir, and is torn down automatically by
+    pytest after the test.
+    """
+    from app.storage.local import LocalStorageService
+
+    return LocalStorageService(str(tmp_path / "uploads"))
+

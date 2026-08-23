@@ -56,3 +56,9 @@ Coming soon.
 ## License
 
 TBD
+
+<!-- & "C:\Program Files\PostgreSQL\18\bin\psql.exe" -U postgres -h localhost 
+\c invoice_extractor
+
+uvicorn app.main:app --reload
+-->

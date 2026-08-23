@@ -54,7 +54,11 @@ class Settings(BaseSettings):
     # --- File storage (local filesystem for MVP) ---
     storage_dir: str = "./data/uploads"
     max_upload_size_mb: int = 15
-    allowed_upload_extensions: tuple[str, ...] = (".pdf", ".png", ".jpg", ".jpeg")
+    # PDF only for now. Phase 2 originally included .png/.jpg as a
+    # placeholder; Phase 4 explicitly scopes upload support to PDF only and
+    # image formats have not been separately approved, so this was
+    # corrected here rather than carried forward silently.
+    allowed_upload_extensions: tuple[str, ...] = (".pdf",)
 
     # --- Logging ---
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
