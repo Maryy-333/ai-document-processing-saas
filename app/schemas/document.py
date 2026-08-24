@@ -24,3 +24,29 @@ class DocumentUploadResponse(BaseModel):
     file_size_bytes: int
     status: DocumentStatus
     created_at: datetime
+
+
+class DocumentProcessingResponse(BaseModel):
+    """
+    Response for processing-stage endpoints (e.g. extract-text). Deliberately
+    does not include extracted_text_storage_key or storage_key — those are
+    internal server-side pointers, not client-facing data, consistent with
+    the Phase 4 decision to keep storage_key out of API responses.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    organization_id: UUID
+    status: DocumentStatus
+    updated_at: datetime
+
+
+class ExtractTextRequest(BaseModel):
+    """
+    organization_id here is the SAME temporary, client-supplied,
+    pre-authentication field established in Phase 4 — NOT an authorization
+    mechanism. See app/services/text_extraction_service.py module docstring.
+    """
+
+    organization_id: UUID

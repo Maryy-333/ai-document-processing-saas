@@ -60,6 +60,12 @@ class Settings(BaseSettings):
     # corrected here rather than carried forward silently.
     allowed_upload_extensions: tuple[str, ...] = (".pdf",)
 
+    # --- Text extraction (Phase 5) ---
+    # Minimum non-whitespace characters across a PDF's combined extracted
+    # text for it to be considered "usable" digital text rather than a
+    # scanned/image-only document requiring OCR (Phase 6).
+    min_extractable_text_chars: int = 20
+
     # --- Logging ---
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
 
@@ -68,6 +74,12 @@ class Settings(BaseSettings):
     ai_provider: str = "unset"
     ai_model_name: str = "unset"
     ai_api_key: str = ""
+
+    # --- PDF text extraction (Phase 5) ---
+    # Minimum non-whitespace character count across the whole document for
+    # extracted text to be considered "meaningful". Below this, the document
+    # is treated as textless/scanned and routed to OCR_REQUIRED (Phase 6).
+    meaningful_text_min_chars: int = 20
 
     @field_validator("jwt_secret_key")
     @classmethod

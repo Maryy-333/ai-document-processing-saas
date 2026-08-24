@@ -15,8 +15,13 @@ from sqlalchemy.orm import Session
 from app.core.config import Settings, get_settings
 from app.db.session import get_db
 from app.processing.validation import OversizedFileError, UploadValidationConfig
-from app.schemas.document import DocumentUploadResponse
+from app.schemas.document import (
+    DocumentProcessingResponse,
+    DocumentUploadResponse,
+    ExtractTextRequest,
+)
 from app.services.document_service import UploadFileInput, upload_document
+from app.services.text_extraction_service import extract_document_text
 from app.storage.base import StorageService
 from app.storage.local import LocalStorageService
 
@@ -87,5 +92,23 @@ async def upload(
         uploaded_by_user_id=uploaded_by_user_id,
         upload=upload_input,
         validation_config=validation_config,
+    )
+    return document
+
+
+@router.post("/{document_id}/extract-text", response_model=DocumentProcessingResponse)
+async def extract_text(
+    document_id: uuid.UUID,
+    request: ExtractTextRequest,
+    db: Session = Depends(get_db),
+    storage: StorageService = Depends(get_storage_service),
+    settings: Settings = Depends(get_settings),
+):
+    document = extract_document_text(
+        db,
+        storage,
+        document_id=document_id,
+        organization_id=request.organization_id,
+        min_extractable_text_chars=settings.meaningful_text_min_chars,
     )
     return document

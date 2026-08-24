@@ -58,6 +58,23 @@ class Document(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         index=True,
     )
 
+    # Pointer to the extracted-text artifact (Phase 5), stored via the same
+    # StorageService as the original PDF — NOT the text itself. The text is
+    # a derived processing artifact, not authoritative business data, and
+    # may be regenerated from the original PDF later. Null until extraction
+    # has produced usable text (see DocumentStatus.TEXT_EXTRACTED).
+    extracted_text_storage_key: Mapped[str | None] = mapped_column(
+        String(1024), nullable=True
+    )
+
+    # Pointer to the extracted-text artifact under StorageService — NOT the
+    # text itself. The extracted text is a derived processing artifact, not
+    # authoritative business data, and can be regenerated from the original
+    # PDF if needed. Populated by Phase 5 text extraction; null until then.
+    extracted_text_storage_key: Mapped[str | None] = mapped_column(
+        String(1024), nullable=True
+    )
+
     organization: Mapped["Organization"] = relationship(back_populates="documents")
     uploaded_by: Mapped["User"] = relationship()
 

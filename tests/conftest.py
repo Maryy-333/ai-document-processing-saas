@@ -23,7 +23,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 TEST_DATABASE_URL = os.environ.get(
     "TEST_DATABASE_URL",
-    "postgresql+psycopg://postgres:postgres@localhost:5432/invoice_extractor_test",
+    "postgresql+psycopg://postgres:733586@localhost:5432/invoice_extractor_test",
 )
 
 _engine = create_engine(TEST_DATABASE_URL, future=True)
