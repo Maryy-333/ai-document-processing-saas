@@ -3,9 +3,9 @@ import uuid
 
 import pytest
 
-from app.core.exceptions import NotFoundError, ProcessingError
+from app.core.exceptions import DatabaseError, NotFoundError, ProcessingError
 from app.models import Document, Organization, ProcessingJob, User
-from app.models.enums import DocumentStatus, ProcessingStage, ProcessingStatus
+from app.models.enums import DocumentStatus, ErrorCategory, ProcessingStage, ProcessingStatus
 from app.services.text_extraction_service import (
     extract_document_text,
     generate_extracted_text_storage_key,
@@ -223,3 +223,227 @@ def test_processing_job_recorded_as_failed_on_corrupted_pdf(db_session, local_st
     assert jobs[0].status == ProcessingStatus.FAILED
     assert jobs[0].error_category is not None
     assert jobs[0].error_message is not None
+
+
+# ==================================================
+# Phase 6: OCR continuation from extract_document_text
+# ==================================================
+
+
+def test_extract_document_text_continues_into_ocr_on_textless_pdf(db_session, local_storage):
+    from tests.fixtures.fake_ocr_engine import FakeOCREngine
+    from tests.fixtures.pdf_fixtures import make_image_only_pdf
+
+    org, user = make_org_user(db_session)
+    key = f"{org.id}/scanned.pdf"
+    doc = make_document(db_session, org, user, key)
+    local_storage.save(key, io.BytesIO(make_image_only_pdf()))
+
+    result = extract_document_text(
+        db_session,
+        local_storage,
+        document_id=doc.id,
+        organization_id=org.id,
+        min_extractable_text_chars=MIN_CHARS,
+        ocr_engine=FakeOCREngine("INVOICE Total Amount Due: $77.00"),
+        ocr_enabled=True,
+        ocr_min_text_chars=MIN_CHARS,
+        ocr_dpi=150,
+    )
+    assert result.status == DocumentStatus.TEXT_EXTRACTED
+    assert result.extracted_text_storage_key is not None
+
+
+def test_extract_document_text_stops_at_ocr_required_when_disabled(db_session, local_storage):
+    from tests.fixtures.pdf_fixtures import make_image_only_pdf
+
+    org, user = make_org_user(db_session)
+    key = f"{org.id}/scanned.pdf"
+    doc = make_document(db_session, org, user, key)
+    local_storage.save(key, io.BytesIO(make_image_only_pdf()))
+
+    result = extract_document_text(
+        db_session,
+        local_storage,
+        document_id=doc.id,
+        organization_id=org.id,
+        min_extractable_text_chars=MIN_CHARS,
+        ocr_engine=None,
+        ocr_enabled=False,
+    )
+    assert result.status == DocumentStatus.OCR_REQUIRED
+
+
+def test_ocr_storage_save_failure_does_not_leave_orphaned_success(db_session, local_storage):
+    """StorageService.save() failure during the OCR artifact write must be
+    recorded as a failure, not silently swallowed."""
+    from unittest.mock import MagicMock
+
+    from tests.fixtures.fake_ocr_engine import FakeOCREngine
+    from tests.fixtures.pdf_fixtures import make_image_only_pdf
+
+    org, user = make_org_user(db_session)
+    key = f"{org.id}/scanned.pdf"
+    doc = make_document(db_session, org, user, key)
+    original_bytes = make_image_only_pdf()
+    local_storage.save(key, io.BytesIO(original_bytes))
+
+    def save_that_fails_for_artifact(k, data):
+        raise OSError("simulated disk full")
+
+    failing_storage = MagicMock()
+    failing_storage.read = local_storage.read
+    failing_storage.exists = local_storage.exists
+    failing_storage.delete = MagicMock(wraps=local_storage.delete)
+    failing_storage.save = MagicMock(side_effect=save_that_fails_for_artifact)
+
+    with pytest.raises(DatabaseError):
+        extract_document_text(
+            db_session,
+            failing_storage,
+            document_id=doc.id,
+            organization_id=org.id,
+            min_extractable_text_chars=MIN_CHARS,
+            ocr_engine=FakeOCREngine("INVOICE Total Amount Due: $500.00"),
+            ocr_enabled=True,
+            ocr_min_text_chars=MIN_CHARS,
+            ocr_dpi=150,
+        )
+
+    db_session.refresh(doc)
+    assert doc.status == DocumentStatus.FAILED
+    assert doc.extracted_text_storage_key is None
+    # Original PDF must remain untouched.
+    assert local_storage.read(key) == original_bytes
+
+
+def test_ocr_db_failure_after_artifact_write_triggers_cleanup(local_storage, monkeypatch):
+    """
+    Uses a real standalone session (not the shared db_session fixture)
+    rather than the transaction-wrapped one used elsewhere in this file.
+    Reason: the db_session fixture wraps each test in one outer transaction
+    via connection.begin(), under which Session.commit() only soft-commits
+    (flushes within that still-open outer transaction) while Session.
+    rollback() performs a REAL rollback of that entire outer transaction —
+    so a rollback after multiple prior commits wipes out all of them, not
+    just the most recent one. That's a property of the test harness, not of
+    real production sessions (which don't run inside an externally-managed
+    outer transaction), so this test uses a real session to exercise the
+    actual commit/rollback/re-commit sequence _run_ocr relies on, with
+    manual row cleanup afterward since nothing auto-rolls-back here.
+    """
+    from tests.conftest import _SessionFactory
+    from tests.fixtures.fake_ocr_engine import FakeOCREngine
+    from tests.fixtures.pdf_fixtures import make_image_only_pdf
+
+    db = _SessionFactory()
+    try:
+        org, user = make_org_user(db)
+        key = f"{org.id}/scanned.pdf"
+        doc = make_document(db, org, user, key)
+        doc.status = DocumentStatus.OCR_REQUIRED
+        db.commit()
+
+        expected_artifact_key = f"{org.id}/{doc.id}/extracted_text.txt"
+        original_bytes = make_image_only_pdf()
+        local_storage.save(key, io.BytesIO(original_bytes))
+
+        original_commit = db.commit
+        call_count = {"n": 0}
+
+        def commit_fails_on_second_call():
+            call_count["n"] += 1
+            # commit #1 = OCR job created (RUNNING) + OCR_PROCESSING status
+            # commit #2 = saves TEXT_EXTRACTED + storage key (fails)
+            # commit #3+ = _mark_failed()'s own cleanup commit — must succeed.
+            if call_count["n"] == 2:
+                raise RuntimeError("simulated database failure")
+            return original_commit()
+
+        monkeypatch.setattr(db, "commit", commit_fails_on_second_call)
+
+        from app.services.text_extraction_service import _run_ocr
+
+        with pytest.raises(DatabaseError):
+            _run_ocr(
+                db,
+                local_storage,
+                doc,
+                engine=FakeOCREngine("INVOICE Total Amount Due: $500.00"),
+                min_text_chars=MIN_CHARS,
+                dpi=150,
+            )
+
+        monkeypatch.setattr(db, "commit", original_commit)
+
+        # The extracted-text artifact must have been cleaned up (best-effort).
+        assert not local_storage.exists(expected_artifact_key)
+        # Original PDF must remain untouched.
+        assert local_storage.read(key) == original_bytes
+
+        # The failure state must have actually persisted (real commit, not
+        # just held in memory) — this is exactly what the fixture-wrapped
+        # pattern couldn't reliably verify above.
+        db.refresh(doc)
+        assert doc.status == DocumentStatus.FAILED
+    finally:
+        # Manual cleanup since this session isn't wrapped in an
+        # auto-rolled-back outer transaction like the shared fixture.
+        db.rollback()
+        db.query(ProcessingJob).filter(ProcessingJob.document_id == doc.id).delete()
+        db.query(Document).filter(Document.id == doc.id).delete()
+        db.query(User).filter(User.id == user.id).delete()
+        db.query(Organization).filter(Organization.id == org.id).delete()
+        db.commit()
+        db.close()
+
+
+def test_ocr_rendering_failure_is_recorded(db_session, local_storage, monkeypatch):
+    """
+    A file that opens fine (passes native extraction) but fails specifically
+    during page rendering isn't realistically constructible as a plain PDF
+    fixture, since native extraction and OCR rendering both call the same
+    fitz.open(). Tested via monkeypatch instead — an honest substitute for a
+    scenario that can't be reached with a natural file.
+    """
+    from tests.fixtures.fake_ocr_engine import FakeOCREngine
+    from tests.fixtures.pdf_fixtures import make_image_only_pdf
+
+    org, user = make_org_user(db_session)
+    key = f"{org.id}/scanned.pdf"
+    doc = make_document(db_session, org, user, key)
+    local_storage.save(key, io.BytesIO(make_image_only_pdf()))
+
+    from app.ocr.rendering import PdfRenderError
+
+    def raise_render_error(pdf_bytes, dpi):
+        raise PdfRenderError()
+
+    monkeypatch.setattr(
+        "app.ocr.ocr_extraction.render_pdf_pages_to_images", raise_render_error
+    )
+
+    with pytest.raises(PdfRenderError):
+        extract_document_text(
+            db_session,
+            local_storage,
+            document_id=doc.id,
+            organization_id=org.id,
+            min_extractable_text_chars=MIN_CHARS,
+            ocr_engine=FakeOCREngine("INVOICE Total Amount Due: $500.00"),
+            ocr_enabled=True,
+            ocr_min_text_chars=MIN_CHARS,
+            ocr_dpi=150,
+        )
+
+    db_session.refresh(doc)
+    assert doc.status == DocumentStatus.FAILED
+
+    jobs = (
+        db_session.query(ProcessingJob)
+        .filter(ProcessingJob.document_id == doc.id, ProcessingJob.stage == ProcessingStage.OCR)
+        .all()
+    )
+    assert len(jobs) == 1
+    assert jobs[0].status == ProcessingStatus.FAILED
+    assert jobs[0].error_category == ErrorCategory.PROCESSING_ERROR

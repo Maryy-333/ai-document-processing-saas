@@ -35,14 +35,21 @@ def make_document(db_session, org, user, storage_key):
     return doc
 
 
-def client_with_overrides(db_session, storage: StorageService) -> TestClient:
-    from app.api.v1.documents import get_storage_service
+_NO_OVERRIDE = object()
+
+
+def client_with_overrides(
+    db_session, storage: StorageService, ocr_engine=_NO_OVERRIDE
+) -> TestClient:
+    from app.api.v1.documents import get_ocr_engine, get_storage_service
 
     def _get_db_override():
         yield db_session
 
     app.dependency_overrides[get_db] = _get_db_override
     app.dependency_overrides[get_storage_service] = lambda: storage
+    if ocr_engine is not _NO_OVERRIDE:
+        app.dependency_overrides[get_ocr_engine] = lambda: ocr_engine
     return TestClient(app)
 
 
@@ -73,12 +80,19 @@ def test_extract_text_success_returns_text_extracted(db_session, local_storage):
 
 
 def test_extract_text_textless_pdf_returns_ocr_required(db_session, local_storage):
+    """
+    Phase 5 behavior, preserved in isolation: native extraction correctly
+    identifies textless/scanned content and routes to OCR_REQUIRED. OCR is
+    explicitly disabled (ocr_engine=None) for this test so it verifies only
+    the native-extraction detection step, not Phase 6's continuation into
+    OCR — that continuation is covered separately in test_ocr_pipeline_api.py.
+    """
     org, user = make_org_user(db_session)
     key = f"{org.id}/blank.pdf"
     doc = make_document(db_session, org, user, key)
     local_storage.save(key, io.BytesIO(make_blank_pdf()))
 
-    client = client_with_overrides(db_session, local_storage)
+    client = client_with_overrides(db_session, local_storage, ocr_engine=None)
     try:
         response = client.post(
             f"/api/v1/documents/{doc.id}/extract-text",

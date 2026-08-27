@@ -81,6 +81,15 @@ class Settings(BaseSettings):
     # is treated as textless/scanned and routed to OCR_REQUIRED (Phase 6).
     meaningful_text_min_chars: int = 20
 
+    # --- OCR (Phase 6) ---
+    ocr_enabled: bool = True
+    ocr_language: str = "en"
+    # Separate threshold from meaningful_text_min_chars (the same
+    # has_meaningful_text() function is reused, only the numeric value
+    # differs) since OCR output is noisier and may warrant a different bar.
+    ocr_min_text_chars: int = 20
+    ocr_dpi: int = 200
+
     @field_validator("jwt_secret_key")
     @classmethod
     def warn_on_insecure_secret(cls, value: str) -> str:

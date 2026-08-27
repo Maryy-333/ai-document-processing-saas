@@ -13,10 +13,19 @@ psycopg[binary]==3.2.2
 alembic==1.13.2
 
 # --- PDF processing ---
-PyMuPDF==1.24.10
-
-# --- PDF processing ---
 PyMuPDF==1.24.9
+
+# --- OCR (Phase 6) ---
+# paddlepaddle 3.1.1: confirmed Linux wheels for cp311/cp312 (project's
+# actual Python versions; the Phase 6 brief's "3.13" claim did not match
+# the repository's actual Dockerfile/environment - verified before pinning).
+# paddleocr 3.2.0: first release documented as fully supporting PaddlePaddle
+# 3.1.x and with Python 3.12 restrictions relaxed (earlier 3.0.x releases
+# had reported Python 3.12 friction). Not pinning the newest 3.6.x release,
+# which adds a much larger doc-parsing surface we don't need for OCR.
+paddlepaddle==3.1.1
+paddleocr==3.2.0
+Pillow==11.3.0
 
 # --- Testing ---
 pytest==8.3.3
