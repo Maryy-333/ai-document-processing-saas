@@ -11,6 +11,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict
 
 from app.models.enums import DocumentStatus
+from app.processing.invoice_validation import ValidationResult
 
 
 class DocumentUploadResponse(BaseModel):
@@ -40,6 +41,10 @@ class DocumentProcessingResponse(BaseModel):
     organization_id: UUID
     status: DocumentStatus
     updated_at: datetime
+    # Populated only when status == REVIEW_REQUIRED. Recomputed fresh by the
+    # route each time (validate_invoice() is pure/cheap/deterministic) —
+    # findings are never persisted, see Phase 8 design decision.
+    validation: ValidationResult | None = None
 
 
 class ExtractTextRequest(BaseModel):

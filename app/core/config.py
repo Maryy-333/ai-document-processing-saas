@@ -69,11 +69,14 @@ class Settings(BaseSettings):
     # --- Logging ---
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
 
-    # --- AI provider (implementation deferred to Phase 7) ---
-    # Reserved now so the config contract is stable; no provider is called yet.
-    ai_provider: str = "unset"
-    ai_model_name: str = "unset"
+    # --- AI provider (Phase 7) ---
+    # Defaults point at the approved Anthropic provider; ai_api_key has no
+    # default on purpose — it must come from a real environment variable or
+    # .env, never a committed value.
+    ai_provider: str = "anthropic"
+    ai_model_name: str = "claude-haiku-4-5"
     ai_api_key: str = ""
+    ai_timeout_seconds: float = 30.0
 
     # --- PDF text extraction (Phase 5) ---
     # Minimum non-whitespace character count across the whole document for

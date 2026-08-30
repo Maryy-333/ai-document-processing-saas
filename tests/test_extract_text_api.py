@@ -39,9 +39,9 @@ _NO_OVERRIDE = object()
 
 
 def client_with_overrides(
-    db_session, storage: StorageService, ocr_engine=_NO_OVERRIDE
+    db_session, storage: StorageService, ocr_engine=_NO_OVERRIDE, ai_provider=None
 ) -> TestClient:
-    from app.api.v1.documents import get_ocr_engine, get_storage_service
+    from app.api.v1.documents import get_ai_provider, get_ocr_engine, get_storage_service
 
     def _get_db_override():
         yield db_session
@@ -50,6 +50,16 @@ def client_with_overrides(
     app.dependency_overrides[get_storage_service] = lambda: storage
     if ocr_engine is not _NO_OVERRIDE:
         app.dependency_overrides[get_ocr_engine] = lambda: ocr_engine
+    # ALWAYS overridden (never falls through to the real dependency), and
+    # defaults to None (AI extraction disabled). This file's tests predate
+    # the AI provider (Phase 7) and were written to assert behavior that
+    # stops at TEXT_EXTRACTED/OCR_REQUIRED-continuation. Without this
+    # override, a real ANTHROPIC_API_KEY present in the developer's local
+    # .env would cause these tests to make a real network call and fail
+    # non-deterministically depending on account credits — the test suite
+    # must never depend on real external AI APIs regardless of local
+    # environment configuration.
+    app.dependency_overrides[get_ai_provider] = lambda: ai_provider
     return TestClient(app)
 
 
@@ -236,5 +246,48 @@ def test_extract_text_original_pdf_untouched_after_failure(db_session, local_sto
             json={"organization_id": str(org.id)},
         )
         assert local_storage.read(key) == original_bytes
+    finally:
+        teardown_overrides()
+
+
+def test_extract_text_never_calls_real_ai_provider_by_default(
+    db_session, local_storage, monkeypatch
+):
+    """
+    Proves this file's tests are immune to real Anthropic calls regardless
+    of local environment configuration — reproduces exactly the failure
+    condition reported (a real ANTHROPIC_API_KEY present in the local .env)
+    and confirms AI extraction is never even attempted, let alone over a
+    real network connection.
+    """
+    monkeypatch.setenv("AI_API_KEY", "sk-ant-fake-key-simulating-a-real-configured-key")
+    monkeypatch.setenv("AI_PROVIDER", "anthropic")
+
+    org, user = make_org_user(db_session)
+    key = f"{org.id}/doc.pdf"
+    doc = make_document(db_session, org, user, key)
+    local_storage.save(key, io.BytesIO(make_text_pdf("INVOICE Total: $500.00")))
+
+    # No ai_provider argument passed — relies entirely on this file's
+    # client_with_overrides default (ai_provider=None), NOT on whatever
+    # AI_API_KEY happens to be set in the environment.
+    client = client_with_overrides(db_session, local_storage)
+    try:
+        response = client.post(
+            f"/api/v1/documents/{doc.id}/extract-text",
+            json={"organization_id": str(org.id)},
+        )
+        assert response.status_code == 200
+        # Stops at TEXT_EXTRACTED, not REVIEW_REQUIRED — proves AI
+        # extraction (and therefore Phase 8 validation) never ran.
+        assert response.json()["status"] == "TEXT_EXTRACTED"
+
+        db_session.refresh(doc)
+        ai_jobs = (
+            db_session.query(ProcessingJob)
+            .filter(ProcessingJob.document_id == doc.id, ProcessingJob.provider_name.isnot(None))
+            .all()
+        )
+        assert ai_jobs == []
     finally:
         teardown_overrides()

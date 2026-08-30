@@ -14,7 +14,12 @@ from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
 from app.db.session import get_db
+from app.models import Invoice
+from app.models.enums import DocumentStatus
 from app.ocr.engine import OCREngine, PaddleOCREngine
+from app.processing.ai.anthropic_provider import AnthropicProvider
+from app.processing.ai.provider import AIProvider
+from app.processing.invoice_validation import extracted_invoice_from_orm, validate_invoice
 from app.processing.validation import OversizedFileError, UploadValidationConfig
 from app.schemas.document import (
     DocumentProcessingResponse,
@@ -108,6 +113,21 @@ def get_ocr_engine(settings: Settings = Depends(get_settings)) -> OCREngine | No
     return PaddleOCREngine(language=settings.ocr_language)
 
 
+def get_ai_provider(settings: Settings = Depends(get_settings)) -> AIProvider | None:
+    """
+    Returns None (AI extraction skipped) when no API key is configured —
+    that absence IS the "disabled" signal, rather than a separate toggle.
+    Construction itself makes no network call.
+    """
+    if not settings.ai_api_key:
+        return None
+    return AnthropicProvider(
+        api_key=settings.ai_api_key,
+        model=settings.ai_model_name,
+        timeout_seconds=settings.ai_timeout_seconds,
+    )
+
+
 @router.post("/{document_id}/extract-text", response_model=DocumentProcessingResponse)
 async def extract_text(
     document_id: uuid.UUID,
@@ -116,6 +136,7 @@ async def extract_text(
     storage: StorageService = Depends(get_storage_service),
     settings: Settings = Depends(get_settings),
     ocr_engine: OCREngine | None = Depends(get_ocr_engine),
+    ai_provider: AIProvider | None = Depends(get_ai_provider),
 ):
     document = extract_document_text(
         db,
@@ -127,5 +148,19 @@ async def extract_text(
         ocr_enabled=settings.ocr_enabled,
         ocr_min_text_chars=settings.ocr_min_text_chars,
         ocr_dpi=settings.ocr_dpi,
+        ai_provider=ai_provider,
     )
-    return document
+
+    validation_result = None
+    if document.status == DocumentStatus.REVIEW_REQUIRED:
+        invoice = db.query(Invoice).filter(Invoice.document_id == document.id).first()
+        if invoice is not None:
+            validation_result = validate_invoice(extracted_invoice_from_orm(invoice))
+
+    return DocumentProcessingResponse(
+        id=document.id,
+        organization_id=document.organization_id,
+        status=document.status,
+        updated_at=document.updated_at,
+        validation=validation_result,
+    )

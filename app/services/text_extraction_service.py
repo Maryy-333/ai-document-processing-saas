@@ -18,7 +18,6 @@ authenticated request rather than accept it as a request parameter.
 import io
 import time
 import uuid
-from datetime import UTC, datetime
 
 from sqlalchemy.orm import Session
 
@@ -29,11 +28,15 @@ from app.models.enums import DocumentStatus, ErrorCategory, ProcessingStage, Pro
 from app.ocr.engine import OCREngine, OCREngineError
 from app.ocr.ocr_extraction import extract_text_from_pdf_with_ocr
 from app.ocr.rendering import PdfRenderError
+from app.processing.ai.provider import AIProvider
 from app.processing.pdf_extraction import (
     PdfOpenError,
     extract_text_from_pdf_bytes,
     has_meaningful_text,
 )
+from app.services.invoice_extraction_service import extract_invoice_from_document
+from app.services.processing_helpers import mark_failed as _mark_failed
+from app.services.processing_helpers import now as _now
 from app.storage.base import StorageService
 
 logger = get_logger(__name__)
@@ -57,40 +60,6 @@ def generate_extracted_text_storage_key(organization_id: uuid.UUID, document_id:
     return f"{organization_id}/{document_id}/extracted_text.txt"
 
 
-def _now() -> datetime:
-    return datetime.now(UTC)
-
-
-def _mark_failed(
-    db: Session,
-    document: Document,
-    job: ProcessingJob,
-    *,
-    category: ErrorCategory,
-    message: str,
-    started_at: datetime,
-) -> None:
-    """
-    Marks both the Document and its ProcessingJob as failed and commits.
-    Never leaves the document in a state that implies success.
-    """
-    document.status = DocumentStatus.FAILED
-    job.status = ProcessingStatus.FAILED
-    job.completed_at = _now()
-    job.duration_ms = int((job.completed_at - started_at).total_seconds() * 1000)
-    job.error_category = category
-    job.error_message = message
-    try:
-        db.commit()
-    except Exception:
-        # If even the failure-marking commit fails, there is nothing further
-        # we can safely do here beyond surfacing a DatabaseError — this is a
-        # documented, accepted limitation (see Known Limitations).
-        db.rollback()
-        logger.error("Failed to persist FAILED status for document_id=%s", document.id)
-        raise DatabaseError("Failed to record processing failure.") from None
-
-
 def extract_document_text(
     db: Session,
     storage: StorageService,
@@ -102,6 +71,7 @@ def extract_document_text(
     ocr_enabled: bool = True,
     ocr_min_text_chars: int = 20,
     ocr_dpi: int = 200,
+    ai_provider: AIProvider | None = None,
 ) -> Document:
     document = get_org_scoped_document(db, document_id, organization_id)
 
@@ -227,7 +197,7 @@ def extract_document_text(
         # Preserves exact Phase 5 behavior (stop at OCR_REQUIRED) when OCR is
         # disabled or no engine was injected.
         if ocr_enabled and ocr_engine is not None:
-            return _run_ocr(
+            document = _run_ocr(
                 db,
                 storage,
                 document,
@@ -235,6 +205,14 @@ def extract_document_text(
                 min_text_chars=ocr_min_text_chars,
                 dpi=ocr_dpi,
             )
+
+    # Phase 7: continue into AI extraction once text is available, via
+    # either path above (native or OCR) — single continuation point so the
+    # "should we proceed to AI" decision isn't duplicated in two branches.
+    # Preserves exact Phase 5/6 behavior (stop at TEXT_EXTRACTED) when no
+    # provider was injected (e.g. AI_API_KEY not configured).
+    if document.status == DocumentStatus.TEXT_EXTRACTED and ai_provider is not None:
+        document = extract_invoice_from_document(db, storage, document, provider=ai_provider)
 
     return document
 

@@ -41,9 +41,9 @@ def make_document(db_session, org, user, storage_key):
 
 
 def client_with_overrides(
-    db_session, storage: StorageService, ocr_engine=_NO_OVERRIDE
+    db_session, storage: StorageService, ocr_engine=_NO_OVERRIDE, ai_provider=None
 ) -> TestClient:
-    from app.api.v1.documents import get_ocr_engine, get_storage_service
+    from app.api.v1.documents import get_ai_provider, get_ocr_engine, get_storage_service
     from app.main import app
 
     def _get_db_override():
@@ -53,6 +53,11 @@ def client_with_overrides(
     app.dependency_overrides[get_storage_service] = lambda: storage
     if ocr_engine is not _NO_OVERRIDE:
         app.dependency_overrides[get_ocr_engine] = lambda: ocr_engine
+    # ALWAYS overridden, defaults to None (disabled) — see identical
+    # reasoning in tests/test_extract_text_api.py's client_with_overrides.
+    # This file's tests predate the AI provider (Phase 7); without this,
+    # a real local ANTHROPIC_API_KEY makes these tests hit the real API.
+    app.dependency_overrides[get_ai_provider] = lambda: ai_provider
     return TestClient(app)
 
 
@@ -336,5 +341,88 @@ def test_corrupted_pdf_fails_at_native_stage_before_ocr_is_reached(db_session, l
         assert len(jobs) == 1
         assert jobs[0].stage == ProcessingStage.TEXT_EXTRACTION
         assert jobs[0].status == ProcessingStatus.FAILED
+    finally:
+        teardown_overrides()
+
+
+def test_ocr_pipeline_never_calls_real_ai_provider_by_default(
+    db_session, local_storage, monkeypatch
+):
+    """
+    Reproduces the reported failure condition (a real ANTHROPIC_API_KEY
+    present in the local .env) and confirms OCR-path tests in this file
+    remain immune to it — AI extraction is never attempted after OCR
+    succeeds, unless a test explicitly injects a provider.
+    """
+    monkeypatch.setenv("AI_API_KEY", "sk-ant-fake-key-simulating-a-real-configured-key")
+    monkeypatch.setenv("AI_PROVIDER", "anthropic")
+
+    org, user = make_org_user(db_session)
+    key = f"{org.id}/scanned.pdf"
+    doc = make_document(db_session, org, user, key)
+    local_storage.save(key, io.BytesIO(make_image_only_pdf()))
+
+    fake_engine = FakeOCREngine("INVOICE #777 Total: $300.00")
+    # ai_provider not passed — relies on this file's client_with_overrides
+    # default (ai_provider=None), not on the environment.
+    client = client_with_overrides(db_session, local_storage, ocr_engine=fake_engine)
+    try:
+        response = client.post(
+            f"/api/v1/documents/{doc.id}/extract-text",
+            json={"organization_id": str(org.id)},
+        )
+        assert response.status_code == 200
+        # Stops at TEXT_EXTRACTED (OCR ran), not REVIEW_REQUIRED — proves AI
+        # extraction never ran, even though OCR succeeded with usable text.
+        assert response.json()["status"] == "TEXT_EXTRACTED"
+
+        ai_jobs = (
+            db_session.query(ProcessingJob)
+            .filter(ProcessingJob.document_id == doc.id, ProcessingJob.provider_name.isnot(None))
+            .all()
+        )
+        assert ai_jobs == []
+    finally:
+        teardown_overrides()
+
+
+def test_ocr_pipeline_with_explicit_fake_ai_provider_reaches_review_required(
+    db_session, local_storage
+):
+    """
+    Confirms the fix doesn't just disable AI extraction unconditionally —
+    this file's DI wiring correctly honors an explicitly-injected fake
+    provider too, preserving Phase 8's full chain (AI_EXTRACTION →
+    RESULT_VALIDATION → REVIEW_REQUIRED) when a test actually wants it,
+    using the existing AIProvider abstraction rather than a parallel one.
+    """
+    from tests.fixtures.fake_ai_provider import FakeAIProvider
+
+    org, user = make_org_user(db_session)
+    key = f"{org.id}/scanned.pdf"
+    doc = make_document(db_session, org, user, key)
+    local_storage.save(key, io.BytesIO(make_image_only_pdf()))
+
+    fake_engine = FakeOCREngine("INVOICE #888 Total: $450.00")
+    fake_ai_provider = FakeAIProvider({"vendor_name": "Acme Corp", "total": "450.00"})
+    client = client_with_overrides(
+        db_session, local_storage, ocr_engine=fake_engine, ai_provider=fake_ai_provider
+    )
+    try:
+        response = client.post(
+            f"/api/v1/documents/{doc.id}/extract-text",
+            json={"organization_id": str(org.id)},
+        )
+        assert response.status_code == 200
+        assert response.json()["status"] == "REVIEW_REQUIRED"
+        assert fake_ai_provider.call_count == 1
+
+        stages = {
+            j.stage
+            for j in db_session.query(ProcessingJob).filter(ProcessingJob.document_id == doc.id)
+        }
+        assert ProcessingStage.OCR in stages
+        assert ProcessingStage.AI_EXTRACTION in stages
+        assert ProcessingStage.RESULT_VALIDATION in stages
     finally:
         teardown_overrides()

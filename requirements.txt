@@ -25,7 +25,9 @@ PyMuPDF==1.24.9
 # which adds a much larger doc-parsing surface we don't need for OCR.
 paddlepaddle==3.1.1
 paddleocr==3.2.0
-Pillow==11.3.0
+
+# --- AI provider (Phase 7) ---
+anthropic==1.1.0
 
 # --- Testing ---
 pytest==8.3.3
