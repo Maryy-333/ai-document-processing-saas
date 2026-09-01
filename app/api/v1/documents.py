@@ -9,7 +9,8 @@ client-supplied, pre-authentication fields — NOT an authorization mechanism.
 import io
 import uuid
 
-from fastapi import APIRouter, Depends, File, Form, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
@@ -26,7 +27,20 @@ from app.schemas.document import (
     DocumentUploadResponse,
     ExtractTextRequest,
 )
+from app.schemas.review import (
+    ApproveRequest,
+    InvoiceReviewResponse,
+    InvoiceUpdateRequest,
+    RejectRequest,
+)
 from app.services.document_service import UploadFileInput, upload_document
+from app.services.review_service import (
+    ApprovalBlockedByValidationError,
+    approve_document,
+    get_review,
+    reject_document,
+    update_invoice,
+)
 from app.services.text_extraction_service import extract_document_text
 from app.storage.base import StorageService
 from app.storage.local import LocalStorageService
@@ -163,4 +177,90 @@ async def extract_text(
         status=document.status,
         updated_at=document.updated_at,
         validation=validation_result,
+    )
+
+
+@router.get("/{document_id}/review", response_model=InvoiceReviewResponse)
+async def review(
+    document_id: uuid.UUID,
+    organization_id: uuid.UUID = Query(...),
+    db: Session = Depends(get_db),
+):
+    document, invoice, validation_result = get_review(db, document_id, organization_id)
+    return InvoiceReviewResponse(
+        document_id=document.id,
+        organization_id=document.organization_id,
+        status=document.status,
+        invoice=invoice,
+        validation=validation_result,
+    )
+
+
+@router.patch("/{document_id}/invoice", response_model=InvoiceReviewResponse)
+async def edit_invoice(
+    document_id: uuid.UUID,
+    request: InvoiceUpdateRequest,
+    db: Session = Depends(get_db),
+):
+    document, invoice, validation_result = update_invoice(
+        db,
+        document_id,
+        request.organization_id,
+        request.edited_by_user_id,
+        updates=request.model_dump(),
+        fields_set=request.model_fields_set,
+    )
+    return InvoiceReviewResponse(
+        document_id=document.id,
+        organization_id=document.organization_id,
+        status=document.status,
+        invoice=invoice,
+        validation=validation_result,
+    )
+
+
+@router.post("/{document_id}/approve", response_model=DocumentProcessingResponse)
+async def approve(
+    document_id: uuid.UUID,
+    request: ApproveRequest,
+    db: Session = Depends(get_db),
+):
+    try:
+        document = approve_document(
+            db, document_id, request.organization_id, request.approved_by_user_id
+        )
+    except ApprovalBlockedByValidationError as exc:
+        # Richer than the generic {"error": ...} shape — includes the
+        # blocking findings so the caller knows exactly what to fix.
+        return JSONResponse(
+            status_code=409,
+            content={
+                "error": exc.message,
+                "validation": exc.validation_result.model_dump(mode="json"),
+            },
+        )
+    return DocumentProcessingResponse(
+        id=document.id,
+        organization_id=document.organization_id,
+        status=document.status,
+        updated_at=document.updated_at,
+        validation=None,
+    )
+
+
+@router.post("/{document_id}/reject", response_model=DocumentProcessingResponse)
+async def reject(
+    document_id: uuid.UUID,
+    request: RejectRequest,
+    db: Session = Depends(get_db),
+):
+    document = reject_document(
+        db, document_id, request.organization_id, request.rejected_by_user_id, request.reason
+    )
+    return DocumentProcessingResponse(
+        id=document.id,
+        organization_id=document.organization_id,
+        status=document.status,
+        updated_at=document.updated_at,
+        validation=None,
     )

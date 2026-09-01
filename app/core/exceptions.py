@@ -71,3 +71,15 @@ class AuthorizationError(AppError):
     """The caller is authenticated but not permitted to perform this action."""
 
     message = "You do not have permission to perform this action."
+
+
+class InvalidStateTransitionError(AppError):
+    """
+    The requested action is not valid given the resource's current state
+    (e.g. approving a document that isn't REVIEW_REQUIRED). Distinct from
+    UserError (malformed input) and NotFoundError (resource doesn't exist)
+    — the request is well-formed and the resource exists, but the action
+    conflicts with its current state. Maps to HTTP 409, not 400.
+    """
+
+    message = "This action cannot be performed in the resource's current state."

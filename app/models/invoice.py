@@ -16,7 +16,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING
 from uuid import UUID as UUIDType
 
-from sqlalchemy import Date, DateTime, ForeignKey, Numeric, String
+from sqlalchemy import Date, DateTime, ForeignKey, Numeric, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -65,8 +65,24 @@ class Invoice(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         nullable=True,
     )
 
+    # --- Review/rejection state (Phase 9) ---
+    # Mirrors approved_at/approved_by_user_id exactly, for the reject path.
+    # Deliberately NOT a generic "reviewed_*" pair — approve and reject are
+    # mutually exclusive terminal outcomes, and separate explicit columns
+    # make it unambiguous which happened without needing a third status
+    # field on this table (Document.status is the source of truth for
+    # which path was taken).
+    rejected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    rejected_by_user_id: Mapped[UUIDType | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    rejection_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     document: Mapped["Document"] = relationship(back_populates="invoice")
-    approved_by: Mapped["User | None"] = relationship()
+    approved_by: Mapped["User | None"] = relationship(foreign_keys=[approved_by_user_id])
+    rejected_by: Mapped["User | None"] = relationship(foreign_keys=[rejected_by_user_id])
     line_items: Mapped[list["InvoiceLineItem"]] = relationship(
         back_populates="invoice",
         cascade="all, delete-orphan",

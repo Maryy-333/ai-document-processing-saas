@@ -15,6 +15,7 @@ from app.core.exceptions import (
     AppError,
     AuthorizationError,
     DatabaseError,
+    InvalidStateTransitionError,
     NotFoundError,
     UserError,
     ValidationError,
@@ -26,6 +27,7 @@ logger = get_logger(__name__)
 _STATUS_BY_EXCEPTION: list[tuple[type[AppError], int]] = [
     (NotFoundError, 404),
     (AuthorizationError, 403),
+    (InvalidStateTransitionError, 409),
     (ValidationError, 400),
     (UserError, 400),
     (DatabaseError, 500),
