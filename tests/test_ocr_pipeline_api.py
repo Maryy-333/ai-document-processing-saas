@@ -6,6 +6,7 @@ from app.db.session import get_db
 from app.models import Document, Organization, ProcessingJob, User
 from app.models.enums import DocumentStatus, ProcessingStage, ProcessingStatus
 from app.storage.base import StorageService
+from tests.fixtures.auth import auth_headers
 from tests.fixtures.fake_ocr_engine import EmptyOCREngine, FailingOCREngine, FakeOCREngine
 from tests.fixtures.pdf_fixtures import (
     make_corrupted_pdf,
@@ -78,7 +79,7 @@ def test_scanned_pdf_routes_through_ocr_to_text_extracted(db_session, local_stor
     try:
         response = client.post(
             f"/api/v1/documents/{doc.id}/extract-text",
-            json={"organization_id": str(org.id)},
+            headers=auth_headers(user.id),
         )
         assert response.status_code == 200
         assert response.json()["status"] == "TEXT_EXTRACTED"
@@ -105,7 +106,7 @@ def test_digital_pdf_never_invokes_ocr(db_session, local_storage):
     try:
         response = client.post(
             f"/api/v1/documents/{doc.id}/extract-text",
-            json={"organization_id": str(org.id)},
+            headers=auth_headers(user.id),
         )
         assert response.status_code == 200
         assert response.json()["status"] == "TEXT_EXTRACTED"
@@ -129,7 +130,7 @@ def test_ocr_creates_processing_job_with_ocr_stage(db_session, local_storage):
     try:
         client.post(
             f"/api/v1/documents/{doc.id}/extract-text",
-            json={"organization_id": str(org.id)},
+            headers=auth_headers(user.id),
         )
         jobs = (
             db_session.query(ProcessingJob)
@@ -160,7 +161,7 @@ def test_ocr_engine_failure_marks_document_failed(db_session, local_storage):
     try:
         response = client.post(
             f"/api/v1/documents/{doc.id}/extract-text",
-            json={"organization_id": str(org.id)},
+            headers=auth_headers(user.id),
         )
         assert response.status_code >= 400
         body = response.json()
@@ -201,7 +202,7 @@ def test_ocr_empty_result_marks_document_failed(db_session, local_storage):
     try:
         response = client.post(
             f"/api/v1/documents/{doc.id}/extract-text",
-            json={"organization_id": str(org.id)},
+            headers=auth_headers(user.id),
         )
         assert response.status_code >= 400
 
@@ -230,7 +231,7 @@ def test_ocr_empty_result_marks_document_failed(db_session, local_storage):
 
 def test_ocr_organization_isolation(db_session, local_storage):
     org_a, user_a = make_org_user(db_session, "Org A", "a@example.com")
-    org_b, _ = make_org_user(db_session, "Org B", "b@example.com")
+    _, user_b = make_org_user(db_session, "Org B", "b@example.com")
     key = f"{org_a.id}/scanned.pdf"
     doc = make_document(db_session, org_a, user_a, key)
     local_storage.save(key, io.BytesIO(make_image_only_pdf()))
@@ -239,7 +240,7 @@ def test_ocr_organization_isolation(db_session, local_storage):
     try:
         response = client.post(
             f"/api/v1/documents/{doc.id}/extract-text",
-            json={"organization_id": str(org_b.id)},
+            headers=auth_headers(user_b.id),
         )
         assert response.status_code == 404
 
@@ -259,7 +260,7 @@ def test_ocr_disabled_stops_at_ocr_required(db_session, local_storage):
     try:
         response = client.post(
             f"/api/v1/documents/{doc.id}/extract-text",
-            json={"organization_id": str(org.id)},
+            headers=auth_headers(user.id),
         )
         assert response.status_code == 200
         assert response.json()["status"] == "OCR_REQUIRED"
@@ -306,7 +307,7 @@ def test_ocr_storage_read_failure(db_session, local_storage):
     try:
         response = client.post(
             f"/api/v1/documents/{doc.id}/extract-text",
-            json={"organization_id": str(org.id)},
+            headers=auth_headers(user.id),
         )
         assert response.status_code >= 400
 
@@ -331,7 +332,7 @@ def test_corrupted_pdf_fails_at_native_stage_before_ocr_is_reached(db_session, l
     try:
         response = client.post(
             f"/api/v1/documents/{doc.id}/extract-text",
-            json={"organization_id": str(org.id)},
+            headers=auth_headers(user.id),
         )
         assert response.status_code >= 400
         db_session.refresh(doc)
@@ -369,7 +370,7 @@ def test_ocr_pipeline_never_calls_real_ai_provider_by_default(
     try:
         response = client.post(
             f"/api/v1/documents/{doc.id}/extract-text",
-            json={"organization_id": str(org.id)},
+            headers=auth_headers(user.id),
         )
         assert response.status_code == 200
         # Stops at TEXT_EXTRACTED (OCR ran), not REVIEW_REQUIRED — proves AI
@@ -411,7 +412,7 @@ def test_ocr_pipeline_with_explicit_fake_ai_provider_reaches_review_required(
     try:
         response = client.post(
             f"/api/v1/documents/{doc.id}/extract-text",
-            json={"organization_id": str(org.id)},
+            headers=auth_headers(user.id),
         )
         assert response.status_code == 200
         assert response.json()["status"] == "REVIEW_REQUIRED"

@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse
 
 from app.core.exceptions import (
     AppError,
+    AuthenticationError,
     AuthorizationError,
     DatabaseError,
     InvalidStateTransitionError,
@@ -26,6 +27,7 @@ logger = get_logger(__name__)
 
 _STATUS_BY_EXCEPTION: list[tuple[type[AppError], int]] = [
     (NotFoundError, 404),
+    (AuthenticationError, 401),
     (AuthorizationError, 403),
     (InvalidStateTransitionError, 409),
     (ValidationError, 400),

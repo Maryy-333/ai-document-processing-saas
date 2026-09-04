@@ -66,10 +66,8 @@ class InvoiceUpdateRequest(BaseModel):
     """
     Request for PATCH /documents/{id}/invoice.
 
-    organization_id / edited_by_user_id are the same temporary,
-    client-supplied, pre-authentication identity fields used everywhere
-    else in this project (see app/services/document_service.py) — NOT an
-    authorization mechanism.
+    Identity (organization, editor) is derived entirely from the
+    authenticated user (Phase 10) — no longer accepted as request fields.
 
     True partial-update (PATCH) semantics: a field the caller does not
     include in the request body is left untouched. A field explicitly sent
@@ -77,9 +75,6 @@ class InvoiceUpdateRequest(BaseModel):
     service layer checks `model_fields_set` rather than truthiness — see
     review_service.py.
     """
-
-    organization_id: UUID
-    edited_by_user_id: UUID
 
     vendor_name: str | None = None
     vendor_address: str | None = None
@@ -100,14 +95,10 @@ class InvoiceUpdateRequest(BaseModel):
     line_items: list[ExtractedLineItem] | None = None
 
 
-class ApproveRequest(BaseModel):
-    organization_id: UUID
-    approved_by_user_id: UUID
-
-
 class RejectRequest(BaseModel):
-    organization_id: UUID
-    rejected_by_user_id: UUID
+    """organization_id/rejected_by_user_id come from the authenticated user
+    (Phase 10) — only the reason is client-supplied here."""
+
     reason: str = Field(min_length=1, max_length=2000)
 
     @field_validator("reason")

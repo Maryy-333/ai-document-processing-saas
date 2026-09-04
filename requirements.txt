@@ -29,6 +29,16 @@ paddleocr==3.2.0
 # --- AI provider (Phase 7) ---
 anthropic==1.1.0
 
+# --- Authentication (Phase 10) ---
+# bcrypt: minimal, actively-maintained password hashing library — used
+# directly rather than through passlib's abstraction layer, since the
+# project commits to exactly one hashing algorithm.
+bcrypt==4.2.0
+# PyJWT: minimal, actively-maintained JWT encode/decode.
+PyJWT==2.9.0
+# Required by Pydantic's EmailStr (used in auth request schemas).
+email-validator==2.2.0
+
 # --- Testing ---
 pytest==8.3.3
 httpx==0.27.2

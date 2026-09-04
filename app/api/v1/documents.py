@@ -1,38 +1,33 @@
 """
-Document upload endpoint.
+Document endpoints.
 
-See app/services/document_service.py module docstring for the important
-caveat about organization_id/uploaded_by_user_id being temporary,
-client-supplied, pre-authentication fields — NOT an authorization mechanism.
+IDENTITY (Phase 10): organization_id and every *_user_id value used below
+come from the authenticated current_user (see app/api/deps.py), never from
+a client-supplied request field. A user cannot upload into another
+organization, nor attribute an approval/rejection/edit to a different user,
+by supplying alternate IDs in the request body — there is no longer any such
+field to supply.
 """
 
 import io
 import uuid
 
-from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
+from fastapi import APIRouter, Depends, File, UploadFile
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
+from app.api.deps import get_current_user
 from app.core.config import Settings, get_settings
 from app.db.session import get_db
-from app.models import Invoice
+from app.models import Invoice, User
 from app.models.enums import DocumentStatus
 from app.ocr.engine import OCREngine, PaddleOCREngine
 from app.processing.ai.anthropic_provider import AnthropicProvider
 from app.processing.ai.provider import AIProvider
 from app.processing.invoice_validation import extracted_invoice_from_orm, validate_invoice
 from app.processing.validation import OversizedFileError, UploadValidationConfig
-from app.schemas.document import (
-    DocumentProcessingResponse,
-    DocumentUploadResponse,
-    ExtractTextRequest,
-)
-from app.schemas.review import (
-    ApproveRequest,
-    InvoiceReviewResponse,
-    InvoiceUpdateRequest,
-    RejectRequest,
-)
+from app.schemas.document import DocumentProcessingResponse, DocumentUploadResponse
+from app.schemas.review import InvoiceReviewResponse, InvoiceUpdateRequest, RejectRequest
 from app.services.document_service import UploadFileInput, upload_document
 from app.services.review_service import (
     ApprovalBlockedByValidationError,
@@ -75,12 +70,11 @@ async def _read_capped(file: UploadFile, max_bytes: int) -> bytes:
 
 @router.post("", response_model=DocumentUploadResponse, status_code=201)
 async def upload(
-    organization_id: uuid.UUID = Form(...),
-    uploaded_by_user_id: uuid.UUID = Form(...),
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
     storage: StorageService = Depends(get_storage_service),
     settings: Settings = Depends(get_settings),
+    current_user: User = Depends(get_current_user),
 ):
     max_bytes = settings.max_upload_size_mb * 1024 * 1024
     content = await _read_capped(file, max_bytes)
@@ -108,8 +102,8 @@ async def upload(
     document = upload_document(
         db,
         storage,
-        organization_id=organization_id,
-        uploaded_by_user_id=uploaded_by_user_id,
+        organization_id=current_user.organization_id,
+        uploaded_by_user_id=current_user.id,
         upload=upload_input,
         validation_config=validation_config,
     )
@@ -145,18 +139,18 @@ def get_ai_provider(settings: Settings = Depends(get_settings)) -> AIProvider | 
 @router.post("/{document_id}/extract-text", response_model=DocumentProcessingResponse)
 async def extract_text(
     document_id: uuid.UUID,
-    request: ExtractTextRequest,
     db: Session = Depends(get_db),
     storage: StorageService = Depends(get_storage_service),
     settings: Settings = Depends(get_settings),
     ocr_engine: OCREngine | None = Depends(get_ocr_engine),
     ai_provider: AIProvider | None = Depends(get_ai_provider),
+    current_user: User = Depends(get_current_user),
 ):
     document = extract_document_text(
         db,
         storage,
         document_id=document_id,
-        organization_id=request.organization_id,
+        organization_id=current_user.organization_id,
         min_extractable_text_chars=settings.meaningful_text_min_chars,
         ocr_engine=ocr_engine,
         ocr_enabled=settings.ocr_enabled,
@@ -183,10 +177,12 @@ async def extract_text(
 @router.get("/{document_id}/review", response_model=InvoiceReviewResponse)
 async def review(
     document_id: uuid.UUID,
-    organization_id: uuid.UUID = Query(...),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    document, invoice, validation_result = get_review(db, document_id, organization_id)
+    document, invoice, validation_result = get_review(
+        db, document_id, current_user.organization_id
+    )
     return InvoiceReviewResponse(
         document_id=document.id,
         organization_id=document.organization_id,
@@ -201,12 +197,13 @@ async def edit_invoice(
     document_id: uuid.UUID,
     request: InvoiceUpdateRequest,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     document, invoice, validation_result = update_invoice(
         db,
         document_id,
-        request.organization_id,
-        request.edited_by_user_id,
+        current_user.organization_id,
+        current_user.id,
         updates=request.model_dump(),
         fields_set=request.model_fields_set,
     )
@@ -222,12 +219,12 @@ async def edit_invoice(
 @router.post("/{document_id}/approve", response_model=DocumentProcessingResponse)
 async def approve(
     document_id: uuid.UUID,
-    request: ApproveRequest,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     try:
         document = approve_document(
-            db, document_id, request.organization_id, request.approved_by_user_id
+            db, document_id, current_user.organization_id, current_user.id
         )
     except ApprovalBlockedByValidationError as exc:
         # Richer than the generic {"error": ...} shape — includes the
@@ -253,9 +250,10 @@ async def reject(
     document_id: uuid.UUID,
     request: RejectRequest,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     document = reject_document(
-        db, document_id, request.organization_id, request.rejected_by_user_id, request.reason
+        db, document_id, current_user.organization_id, current_user.id, request.reason
     )
     return DocumentProcessingResponse(
         id=document.id,

@@ -45,13 +45,3 @@ class DocumentProcessingResponse(BaseModel):
     # route each time (validate_invoice() is pure/cheap/deterministic) —
     # findings are never persisted, see Phase 8 design decision.
     validation: ValidationResult | None = None
-
-
-class ExtractTextRequest(BaseModel):
-    """
-    organization_id here is the SAME temporary, client-supplied,
-    pre-authentication field established in Phase 4 — NOT an authorization
-    mechanism. See app/services/text_extraction_service.py module docstring.
-    """
-
-    organization_id: UUID

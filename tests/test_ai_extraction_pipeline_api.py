@@ -6,6 +6,7 @@ from app.db.session import get_db
 from app.models import Document, Invoice, Organization, ProcessingJob, User
 from app.models.enums import DocumentStatus, ProcessingStage, ProcessingStatus
 from app.storage.base import StorageService
+from tests.fixtures.auth import auth_headers
 from tests.fixtures.fake_ai_provider import (
     FakeAIProvider,
     MalformedResponseAIProvider,
@@ -86,7 +87,7 @@ def test_full_pipeline_reaches_review_required(db_session, local_storage):
     try:
         response = client.post(
             f"/api/v1/documents/{doc.id}/extract-text",
-            json={"organization_id": str(org.id)},
+            headers=auth_headers(user.id),
         )
         assert response.status_code == 200
         # Phase 8: the same call now continues through validation, so the
@@ -115,7 +116,7 @@ def test_ai_extraction_not_triggered_when_no_provider_configured(db_session, loc
     try:
         response = client.post(
             f"/api/v1/documents/{doc.id}/extract-text",
-            json={"organization_id": str(org.id)},
+            headers=auth_headers(user.id),
         )
         assert response.status_code == 200
         assert response.json()["status"] == "TEXT_EXTRACTED"
@@ -136,7 +137,7 @@ def test_ai_provider_failure_returns_safe_error(db_session, local_storage):
     try:
         response = client.post(
             f"/api/v1/documents/{doc.id}/extract-text",
-            json={"organization_id": str(org.id)},
+            headers=auth_headers(user.id),
         )
         assert response.status_code >= 400
         body = response.json()
@@ -162,7 +163,7 @@ def test_malformed_ai_response_returns_safe_error(db_session, local_storage):
     try:
         response = client.post(
             f"/api/v1/documents/{doc.id}/extract-text",
-            json={"organization_id": str(org.id)},
+            headers=auth_headers(user.id),
         )
         assert response.status_code >= 400
         db_session.refresh(doc)
@@ -174,14 +175,14 @@ def test_malformed_ai_response_returns_safe_error(db_session, local_storage):
 def test_ai_extraction_missing_document_returns_404(db_session, local_storage):
     import uuid
 
-    org, _ = make_org_user(db_session)
+    org, user = make_org_user(db_session)
     client = client_with_overrides(
         db_session, local_storage, ocr_engine=None, ai_provider=FakeAIProvider(VALID_INVOICE_RESULT)
     )
     try:
         response = client.post(
             f"/api/v1/documents/{uuid.uuid4()}/extract-text",
-            json={"organization_id": str(org.id)},
+            headers=auth_headers(user.id),
         )
         assert response.status_code == 404
     finally:
@@ -190,7 +191,7 @@ def test_ai_extraction_missing_document_returns_404(db_session, local_storage):
 
 def test_ai_extraction_organization_mismatch_returns_404(db_session, local_storage):
     org_a, user_a = make_org_user(db_session, "Org A", "a@example.com")
-    org_b, _ = make_org_user(db_session, "Org B", "b@example.com")
+    _, user_b = make_org_user(db_session, "Org B", "b@example.com")
     key = f"{org_a.id}/digital.pdf"
     doc = make_document(db_session, org_a, user_a, key)
     local_storage.save(key, io.BytesIO(make_text_pdf("INVOICE #1001 Total: $115.00")))
@@ -202,7 +203,7 @@ def test_ai_extraction_organization_mismatch_returns_404(db_session, local_stora
     try:
         response = client.post(
             f"/api/v1/documents/{doc.id}/extract-text",
-            json={"organization_id": str(org_b.id)},
+            headers=auth_headers(user_b.id),
         )
         assert response.status_code == 404
         assert fake_provider.call_count == 0
@@ -225,7 +226,7 @@ def test_ai_extraction_creates_processing_job_via_api(db_session, local_storage)
     try:
         client.post(
             f"/api/v1/documents/{doc.id}/extract-text",
-            json={"organization_id": str(org.id)},
+            headers=auth_headers(user.id),
         )
         jobs = (
             db_session.query(ProcessingJob)
@@ -263,7 +264,7 @@ def test_existing_phase6_ocr_behavior_remains_intact(db_session, local_storage):
     try:
         response = client.post(
             f"/api/v1/documents/{doc.id}/extract-text",
-            json={"organization_id": str(org.id)},
+            headers=auth_headers(user.id),
         )
         assert response.status_code == 200
         # Phase 8: the same call now continues through validation, so the

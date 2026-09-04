@@ -7,6 +7,7 @@ from app.db.session import get_db
 from app.main import app
 from app.models import Document, Invoice, InvoiceLineItem, Organization, User
 from app.models.enums import DocumentStatus
+from tests.fixtures.auth import auth_headers
 
 
 def make_org_user(db_session, org_name="Acme", email="user@example.com"):
@@ -80,7 +81,9 @@ def test_review_endpoint_returns_invoice_and_validation(db_session):
 
     client = client_with_db(db_session)
     try:
-        response = client.get(f"/api/v1/documents/{doc.id}/review?organization_id={org.id}")
+        response = client.get(
+            f"/api/v1/documents/{doc.id}/review", headers=auth_headers(user.id)
+        )
         assert response.status_code == 200
         body = response.json()
         assert body["invoice"]["vendor_name"] == "Acme"
@@ -90,12 +93,25 @@ def test_review_endpoint_returns_invoice_and_validation(db_session):
         teardown_overrides()
 
 
+def test_review_endpoint_without_auth_returns_401(db_session):
+    org, user = make_org_user(db_session)
+    doc = make_document(db_session, org, user)
+    make_consistent_invoice(db_session, doc)
+
+    client = client_with_db(db_session)
+    try:
+        response = client.get(f"/api/v1/documents/{doc.id}/review")
+        assert response.status_code == 401
+    finally:
+        teardown_overrides()
+
+
 def test_review_endpoint_missing_document_returns_404(db_session):
-    org, _ = make_org_user(db_session)
+    _, user = make_org_user(db_session)
     client = client_with_db(db_session)
     try:
         response = client.get(
-            f"/api/v1/documents/{uuid.uuid4()}/review?organization_id={org.id}"
+            f"/api/v1/documents/{uuid.uuid4()}/review", headers=auth_headers(user.id)
         )
         assert response.status_code == 404
     finally:
@@ -104,13 +120,15 @@ def test_review_endpoint_missing_document_returns_404(db_session):
 
 def test_review_endpoint_cross_org_returns_404(db_session):
     org_a, user_a = make_org_user(db_session, "Org A", "a@example.com")
-    org_b, _ = make_org_user(db_session, "Org B", "b@example.com")
+    _, user_b = make_org_user(db_session, "Org B", "b@example.com")
     doc = make_document(db_session, org_a, user_a)
     make_consistent_invoice(db_session, doc)
 
     client = client_with_db(db_session)
     try:
-        response = client.get(f"/api/v1/documents/{doc.id}/review?organization_id={org_b.id}")
+        response = client.get(
+            f"/api/v1/documents/{doc.id}/review", headers=auth_headers(user_b.id)
+        )
         assert response.status_code == 404
     finally:
         teardown_overrides()
@@ -128,15 +146,46 @@ def test_patch_invoice_partial_update(db_session):
     try:
         response = client.patch(
             f"/api/v1/documents/{doc.id}/invoice",
-            json={
-                "organization_id": str(org.id),
-                "edited_by_user_id": str(user.id),
-                "vendor_name": "Updated Vendor",
-            },
+            headers=auth_headers(user.id),
+            json={"vendor_name": "Updated Vendor"},
         )
         assert response.status_code == 200
         assert response.json()["invoice"]["vendor_name"] == "Updated Vendor"
         assert response.json()["invoice"]["total"] == "110.00"
+    finally:
+        teardown_overrides()
+
+
+def test_patch_invoice_without_auth_returns_401(db_session):
+    org, user = make_org_user(db_session)
+    doc = make_document(db_session, org, user)
+    make_consistent_invoice(db_session, doc)
+
+    client = client_with_db(db_session)
+    try:
+        response = client.patch(
+            f"/api/v1/documents/{doc.id}/invoice",
+            json={"vendor_name": "Should not work"},
+        )
+        assert response.status_code == 401
+    finally:
+        teardown_overrides()
+
+
+def test_patch_invoice_cross_org_returns_404(db_session):
+    org_a, user_a = make_org_user(db_session, "Org A", "a@example.com")
+    _, user_b = make_org_user(db_session, "Org B", "b@example.com")
+    doc = make_document(db_session, org_a, user_a)
+    make_consistent_invoice(db_session, doc)
+
+    client = client_with_db(db_session)
+    try:
+        response = client.patch(
+            f"/api/v1/documents/{doc.id}/invoice",
+            headers=auth_headers(user_b.id),
+            json={"vendor_name": "Hijacked"},
+        )
+        assert response.status_code == 404
     finally:
         teardown_overrides()
 
@@ -150,9 +199,8 @@ def test_patch_invoice_line_item_replacement(db_session):
     try:
         response = client.patch(
             f"/api/v1/documents/{doc.id}/invoice",
+            headers=auth_headers(user.id),
             json={
-                "organization_id": str(org.id),
-                "edited_by_user_id": str(user.id),
                 "line_items": [
                     {
                         "description": "Replaced item",
@@ -180,11 +228,8 @@ def test_patch_invoice_invalid_payload_returns_422(db_session):
     try:
         response = client.patch(
             f"/api/v1/documents/{doc.id}/invoice",
-            json={
-                "organization_id": str(org.id),
-                "edited_by_user_id": str(user.id),
-                "subtotal": "not-a-decimal",
-            },
+            headers=auth_headers(user.id),
+            json={"subtotal": "not-a-decimal"},
         )
         assert response.status_code == 422
     finally:
@@ -200,11 +245,8 @@ def test_patch_invoice_recalculates_and_returns_validation(db_session):
     try:
         response = client.patch(
             f"/api/v1/documents/{doc.id}/invoice",
-            json={
-                "organization_id": str(org.id),
-                "edited_by_user_id": str(user.id),
-                "total": "999999.00",
-            },
+            headers=auth_headers(user.id),
+            json={"total": "999999.00"},
         )
         assert response.status_code == 200
         body = response.json()
@@ -223,18 +265,14 @@ def test_patch_invoice_blocked_after_approval(db_session):
     client = client_with_db(db_session)
     try:
         approve_response = client.post(
-            f"/api/v1/documents/{doc.id}/approve",
-            json={"organization_id": str(org.id), "approved_by_user_id": str(user.id)},
+            f"/api/v1/documents/{doc.id}/approve", headers=auth_headers(user.id)
         )
         assert approve_response.status_code == 200
 
         edit_response = client.patch(
             f"/api/v1/documents/{doc.id}/invoice",
-            json={
-                "organization_id": str(org.id),
-                "edited_by_user_id": str(user.id),
-                "vendor_name": "Too late",
-            },
+            headers=auth_headers(user.id),
+            json={"vendor_name": "Too late"},
         )
         assert edit_response.status_code == 409
     finally:
@@ -252,11 +290,43 @@ def test_approve_endpoint_success(db_session):
     client = client_with_db(db_session)
     try:
         response = client.post(
-            f"/api/v1/documents/{doc.id}/approve",
-            json={"organization_id": str(org.id), "approved_by_user_id": str(user.id)},
+            f"/api/v1/documents/{doc.id}/approve", headers=auth_headers(user.id)
         )
         assert response.status_code == 200
         assert response.json()["status"] == "APPROVED"
+    finally:
+        teardown_overrides()
+
+
+def test_approve_endpoint_without_auth_returns_401(db_session):
+    org, user = make_org_user(db_session)
+    doc = make_document(db_session, org, user)
+    make_consistent_invoice(db_session, doc)
+
+    client = client_with_db(db_session)
+    try:
+        response = client.post(f"/api/v1/documents/{doc.id}/approve")
+        assert response.status_code == 401
+        db_session.refresh(doc)
+        assert doc.status == DocumentStatus.REVIEW_REQUIRED
+    finally:
+        teardown_overrides()
+
+
+def test_approve_endpoint_cross_org_returns_404(db_session):
+    org_a, user_a = make_org_user(db_session, "Org A", "a@example.com")
+    _, user_b = make_org_user(db_session, "Org B", "b@example.com")
+    doc = make_document(db_session, org_a, user_a)
+    make_consistent_invoice(db_session, doc)
+
+    client = client_with_db(db_session)
+    try:
+        response = client.post(
+            f"/api/v1/documents/{doc.id}/approve", headers=auth_headers(user_b.id)
+        )
+        assert response.status_code == 404
+        db_session.refresh(doc)
+        assert doc.status == DocumentStatus.REVIEW_REQUIRED
     finally:
         teardown_overrides()
 
@@ -277,8 +347,7 @@ def test_approve_endpoint_blocked_by_errors_returns_409_with_findings(db_session
     client = client_with_db(db_session)
     try:
         response = client.post(
-            f"/api/v1/documents/{doc.id}/approve",
-            json={"organization_id": str(org.id), "approved_by_user_id": str(user.id)},
+            f"/api/v1/documents/{doc.id}/approve", headers=auth_headers(user.id)
         )
         assert response.status_code == 409
         body = response.json()
@@ -299,8 +368,7 @@ def test_approve_endpoint_invalid_state_returns_409(db_session):
     client = client_with_db(db_session)
     try:
         response = client.post(
-            f"/api/v1/documents/{doc.id}/approve",
-            json={"organization_id": str(org.id), "approved_by_user_id": str(user.id)},
+            f"/api/v1/documents/{doc.id}/approve", headers=auth_headers(user.id)
         )
         assert response.status_code == 409
     finally:
@@ -319,14 +387,27 @@ def test_reject_endpoint_success(db_session):
     try:
         response = client.post(
             f"/api/v1/documents/{doc.id}/reject",
-            json={
-                "organization_id": str(org.id),
-                "rejected_by_user_id": str(user.id),
-                "reason": "Vendor name unreadable in scan.",
-            },
+            headers=auth_headers(user.id),
+            json={"reason": "Vendor name unreadable in scan."},
         )
         assert response.status_code == 200
         assert response.json()["status"] == "REJECTED"
+    finally:
+        teardown_overrides()
+
+
+def test_reject_endpoint_without_auth_returns_401(db_session):
+    org, user = make_org_user(db_session)
+    doc = make_document(db_session, org, user)
+    make_consistent_invoice(db_session, doc)
+
+    client = client_with_db(db_session)
+    try:
+        response = client.post(
+            f"/api/v1/documents/{doc.id}/reject",
+            json={"reason": "reason"},
+        )
+        assert response.status_code == 401
     finally:
         teardown_overrides()
 
@@ -340,11 +421,8 @@ def test_reject_endpoint_blank_reason_returns_422(db_session):
     try:
         response = client.post(
             f"/api/v1/documents/{doc.id}/reject",
-            json={
-                "organization_id": str(org.id),
-                "rejected_by_user_id": str(user.id),
-                "reason": "   ",
-            },
+            headers=auth_headers(user.id),
+            json={"reason": "   "},
         )
         assert response.status_code == 422
     finally:
@@ -353,7 +431,7 @@ def test_reject_endpoint_blank_reason_returns_422(db_session):
 
 def test_reject_endpoint_cross_org_returns_404(db_session):
     org_a, user_a = make_org_user(db_session, "Org A", "a@example.com")
-    org_b, user_b = make_org_user(db_session, "Org B", "b@example.com")
+    _, user_b = make_org_user(db_session, "Org B", "b@example.com")
     doc = make_document(db_session, org_a, user_a)
     make_consistent_invoice(db_session, doc)
 
@@ -361,11 +439,8 @@ def test_reject_endpoint_cross_org_returns_404(db_session):
     try:
         response = client.post(
             f"/api/v1/documents/{doc.id}/reject",
-            json={
-                "organization_id": str(org_b.id),
-                "rejected_by_user_id": str(user_b.id),
-                "reason": "reason",
-            },
+            headers=auth_headers(user_b.id),
+            json={"reason": "reason"},
         )
         assert response.status_code == 404
     finally:
@@ -380,19 +455,50 @@ def test_repeated_transition_returns_409(db_session):
     client = client_with_db(db_session)
     try:
         first = client.post(
-            f"/api/v1/documents/{doc.id}/approve",
-            json={"organization_id": str(org.id), "approved_by_user_id": str(user.id)},
+            f"/api/v1/documents/{doc.id}/approve", headers=auth_headers(user.id)
         )
         assert first.status_code == 200
 
         second = client.post(
             f"/api/v1/documents/{doc.id}/reject",
-            json={
-                "organization_id": str(org.id),
-                "rejected_by_user_id": str(user.id),
-                "reason": "too late",
-            },
+            headers=auth_headers(user.id),
+            json={"reason": "too late"},
         )
         assert second.status_code == 409
+    finally:
+        teardown_overrides()
+
+
+# ---------- Attribution (Phase 10) ----------
+
+
+def test_approve_attribution_uses_authenticated_user(db_session):
+    org, user = make_org_user(db_session)
+    doc = make_document(db_session, org, user)
+    make_consistent_invoice(db_session, doc)
+
+    client = client_with_db(db_session)
+    try:
+        client.post(f"/api/v1/documents/{doc.id}/approve", headers=auth_headers(user.id))
+        invoice = db_session.query(Invoice).filter(Invoice.document_id == doc.id).first()
+        assert invoice.approved_by_user_id == user.id
+    finally:
+        teardown_overrides()
+
+
+def test_reject_attribution_uses_authenticated_user(db_session):
+    org, user = make_org_user(db_session)
+    doc = make_document(db_session, org, user)
+    make_consistent_invoice(db_session, doc)
+
+    client = client_with_db(db_session)
+    try:
+        client.post(
+            f"/api/v1/documents/{doc.id}/reject",
+            headers=auth_headers(user.id),
+            json={"reason": "reason"},
+        )
+        invoice = db_session.query(Invoice).filter(Invoice.document_id == doc.id).first()
+        assert invoice.rejected_by_user_id == user.id
     finally:
         teardown_overrides()

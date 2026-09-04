@@ -1,13 +1,20 @@
 """
-Human review, editing, approval, and rejection orchestration (Phase 9).
+Human review, editing, approval, and rejection orchestration (Phase 9,
+updated for Phase 10 authentication).
 
 Reuses rather than duplicates:
 - get_org_scoped_document() (text_extraction_service.py) for org isolation
-- resolve_and_validate_identity() (document_service.py) for the temporary
-  pre-authentication identity pattern used everywhere else in this project
 - validate_invoice() / extracted_invoice_from_orm() (Phase 8) for
   deterministic validation — re-run after edits and immediately before
   approval, never duplicated
+
+IDENTITY (Phase 10): organization_id and the various *_user_id parameters
+below are supplied by API routes as current_user.organization_id /
+current_user.id — already-authenticated values, not client-supplied request
+fields. This module no longer re-validates that a user_id belongs to an
+organization_id (that was only ever necessary when both were untrusted
+client input — see document_service.py's Phase 10 docstring for the same
+change there).
 
 STATE MACHINE: only REVIEW_REQUIRED -> APPROVED and REVIEW_REQUIRED ->
 REJECTED are valid transitions. Editing is only permitted while
@@ -29,7 +36,6 @@ from app.processing.invoice_validation import (
     extracted_invoice_from_orm,
     validate_invoice,
 )
-from app.services.document_service import resolve_and_validate_identity
 from app.services.invoice_validation_service import MissingDraftInvoiceError
 from app.services.text_extraction_service import get_org_scoped_document
 
@@ -88,10 +94,6 @@ def update_invoice(
     present in fields_set, fully replace the existing collection.
     """
     document = get_org_scoped_document(db, document_id, organization_id)
-    # Confirms edited_by_user_id is a real user belonging to this
-    # organization — same pre-auth identity pattern as everywhere else,
-    # NOT an authorization check (see document_service.py docstring).
-    resolve_and_validate_identity(db, organization_id, edited_by_user_id)
 
     if document.status != DocumentStatus.REVIEW_REQUIRED:
         raise InvalidStateTransitionError(
@@ -157,7 +159,6 @@ def approve_document(
     approved_by_user_id: uuid.UUID,
 ) -> Document:
     document = get_org_scoped_document(db, document_id, organization_id)
-    resolve_and_validate_identity(db, organization_id, approved_by_user_id)
 
     if document.status != DocumentStatus.REVIEW_REQUIRED:
         raise InvalidStateTransitionError(
@@ -196,7 +197,6 @@ def reject_document(
     reason: str,
 ) -> Document:
     document = get_org_scoped_document(db, document_id, organization_id)
-    resolve_and_validate_identity(db, organization_id, rejected_by_user_id)
 
     if document.status != DocumentStatus.REVIEW_REQUIRED:
         raise InvalidStateTransitionError(

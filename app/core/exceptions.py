@@ -67,6 +67,18 @@ class NotFoundError(AppError):
     message = "Resource not found."
 
 
+class AuthenticationError(AppError):
+    """
+    The caller's identity could not be established: missing/malformed
+    Authorization header, invalid/expired token, or a token referencing a
+    user that no longer exists/is inactive. Distinct from AuthorizationError
+    (identity IS established but the action isn't permitted). Maps to
+    HTTP 401, not 403.
+    """
+
+    message = "Authentication required."
+
+
 class AuthorizationError(AppError):
     """The caller is authenticated but not permitted to perform this action."""
 

@@ -6,6 +6,7 @@ from app.db.session import get_db
 from app.models import Document, Organization, ProcessingJob, User
 from app.models.enums import ProcessingStage
 from app.storage.base import StorageService
+from tests.fixtures.auth import auth_headers
 from tests.fixtures.fake_ai_provider import FakeAIProvider
 from tests.fixtures.pdf_fixtures import make_text_pdf
 
@@ -94,7 +95,7 @@ def test_full_pipeline_reaches_review_required_with_no_findings(db_session, loca
     try:
         response = client.post(
             f"/api/v1/documents/{doc.id}/extract-text",
-            json={"organization_id": str(org.id)},
+            headers=auth_headers(user.id),
         )
         assert response.status_code == 200
         body = response.json()
@@ -121,7 +122,7 @@ def test_full_pipeline_reaches_review_required_with_findings_surfaced(db_session
     try:
         response = client.post(
             f"/api/v1/documents/{doc.id}/extract-text",
-            json={"organization_id": str(org.id)},
+            headers=auth_headers(user.id),
         )
         assert response.status_code == 200
         body = response.json()
@@ -143,7 +144,7 @@ def test_validation_field_absent_when_status_not_review_required(db_session, loc
     try:
         response = client.post(
             f"/api/v1/documents/{doc.id}/extract-text",
-            json={"organization_id": str(org.id)},
+            headers=auth_headers(user.id),
         )
         assert response.status_code == 200
         body = response.json()
@@ -168,7 +169,7 @@ def test_result_validation_processing_job_created_via_api(db_session, local_stor
     try:
         client.post(
             f"/api/v1/documents/{doc.id}/extract-text",
-            json={"organization_id": str(org.id)},
+            headers=auth_headers(user.id),
         )
         jobs = (
             db_session.query(ProcessingJob)

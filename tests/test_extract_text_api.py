@@ -8,6 +8,7 @@ from app.main import app
 from app.models import Document, Organization, ProcessingJob, User
 from app.models.enums import DocumentStatus
 from app.storage.base import StorageService
+from tests.fixtures.auth import auth_headers
 from tests.fixtures.pdf_fixtures import make_blank_pdf, make_corrupted_pdf, make_text_pdf
 
 
@@ -77,7 +78,7 @@ def test_extract_text_success_returns_text_extracted(db_session, local_storage):
     try:
         response = client.post(
             f"/api/v1/documents/{doc.id}/extract-text",
-            json={"organization_id": str(org.id)},
+            headers=auth_headers(user.id),
         )
         assert response.status_code == 200
         body = response.json()
@@ -85,6 +86,22 @@ def test_extract_text_success_returns_text_extracted(db_session, local_storage):
         assert body["id"] == str(doc.id)
         assert "extracted_text_storage_key" not in body
         assert "storage_key" not in body
+    finally:
+        teardown_overrides()
+
+
+def test_extract_text_without_auth_rejected(db_session, local_storage):
+    org, user = make_org_user(db_session)
+    key = f"{org.id}/doc.pdf"
+    doc = make_document(db_session, org, user, key)
+    local_storage.save(key, io.BytesIO(make_text_pdf("INVOICE Total: $500.00")))
+
+    client = client_with_overrides(db_session, local_storage)
+    try:
+        response = client.post(f"/api/v1/documents/{doc.id}/extract-text")
+        assert response.status_code == 401
+        db_session.refresh(doc)
+        assert doc.status == DocumentStatus.UPLOADED
     finally:
         teardown_overrides()
 
@@ -106,7 +123,7 @@ def test_extract_text_textless_pdf_returns_ocr_required(db_session, local_storag
     try:
         response = client.post(
             f"/api/v1/documents/{doc.id}/extract-text",
-            json={"organization_id": str(org.id)},
+            headers=auth_headers(user.id),
         )
         assert response.status_code == 200
         assert response.json()["status"] == "OCR_REQUIRED"
@@ -124,7 +141,7 @@ def test_extract_text_corrupted_pdf_fails_safely(db_session, local_storage):
     try:
         response = client.post(
             f"/api/v1/documents/{doc.id}/extract-text",
-            json={"organization_id": str(org.id)},
+            headers=auth_headers(user.id),
         )
         assert response.status_code >= 400
         body = response.json()
@@ -138,26 +155,28 @@ def test_extract_text_corrupted_pdf_fails_safely(db_session, local_storage):
 
 
 def test_extract_text_missing_document_returns_404(db_session, local_storage):
-    org, _ = make_org_user(db_session)
+    _, user = make_org_user(db_session)
     client = client_with_overrides(db_session, local_storage)
     try:
         response = client.post(
             f"/api/v1/documents/{uuid.uuid4()}/extract-text",
-            json={"organization_id": str(org.id)},
+            headers=auth_headers(user.id),
         )
         assert response.status_code == 404
     finally:
         teardown_overrides()
 
 
-def test_extract_text_organization_mismatch_returns_404(db_session, local_storage):
+def test_extract_text_cross_org_access_returns_404(db_session, local_storage):
     """
-    A document must not be extractable by supplying a different
-    organization_id than the one it actually belongs to — same isolation
-    guarantee as Phase 4's upload identity check.
+    Phase 10: a document must not be extractable by a user authenticated
+    into a different organization than the one the document belongs to.
+    Replaces the old client-supplied-organization_id mismatch test — there
+    is no such field anymore; the equivalent (and now stronger) test
+    authenticates as a genuinely different org's real user.
     """
     org_a, user_a = make_org_user(db_session, "Org A", "a@example.com")
-    org_b, _ = make_org_user(db_session, "Org B", "b@example.com")
+    _, user_b = make_org_user(db_session, "Org B", "b@example.com")
     key = f"{org_a.id}/doc.pdf"
     doc = make_document(db_session, org_a, user_a, key)
     local_storage.save(key, io.BytesIO(make_text_pdf("INVOICE Total: $500.00")))
@@ -166,12 +185,11 @@ def test_extract_text_organization_mismatch_returns_404(db_session, local_storag
     try:
         response = client.post(
             f"/api/v1/documents/{doc.id}/extract-text",
-            json={"organization_id": str(org_b.id)},
+            headers=auth_headers(user_b.id),
         )
         assert response.status_code == 404
 
         db_session.refresh(doc)
-        # Document must remain untouched by the mismatched request.
         assert doc.status == DocumentStatus.UPLOADED
     finally:
         teardown_overrides()
@@ -187,7 +205,7 @@ def test_extract_text_creates_processing_job(db_session, local_storage):
     try:
         client.post(
             f"/api/v1/documents/{doc.id}/extract-text",
-            json={"organization_id": str(org.id)},
+            headers=auth_headers(user.id),
         )
         jobs = db_session.query(ProcessingJob).filter(ProcessingJob.document_id == doc.id).all()
         assert len(jobs) == 1
@@ -205,7 +223,7 @@ def test_extract_text_persists_storage_pointer_in_db(db_session, local_storage):
     try:
         client.post(
             f"/api/v1/documents/{doc.id}/extract-text",
-            json={"organization_id": str(org.id)},
+            headers=auth_headers(user.id),
         )
         db_session.refresh(doc)
         assert doc.extracted_text_storage_key == f"{org.id}/{doc.id}/extracted_text.txt"
@@ -225,7 +243,7 @@ def test_extract_text_original_pdf_untouched_after_success(db_session, local_sto
     try:
         client.post(
             f"/api/v1/documents/{doc.id}/extract-text",
-            json={"organization_id": str(org.id)},
+            headers=auth_headers(user.id),
         )
         assert local_storage.read(key) == original_bytes
     finally:
@@ -243,7 +261,7 @@ def test_extract_text_original_pdf_untouched_after_failure(db_session, local_sto
     try:
         client.post(
             f"/api/v1/documents/{doc.id}/extract-text",
-            json={"organization_id": str(org.id)},
+            headers=auth_headers(user.id),
         )
         assert local_storage.read(key) == original_bytes
     finally:
@@ -275,7 +293,7 @@ def test_extract_text_never_calls_real_ai_provider_by_default(
     try:
         response = client.post(
             f"/api/v1/documents/{doc.id}/extract-text",
-            json={"organization_id": str(org.id)},
+            headers=auth_headers(user.id),
         )
         assert response.status_code == 200
         # Stops at TEXT_EXTRACTED, not REVIEW_REQUIRED — proves AI

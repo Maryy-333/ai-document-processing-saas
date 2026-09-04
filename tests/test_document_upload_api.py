@@ -6,6 +6,7 @@ from app.db.session import get_db
 from app.main import app
 from app.models import Document, Organization, User
 from app.storage.base import StorageService
+from tests.fixtures.auth import auth_headers
 
 VALID_PDF = b"%PDF-1.4\n%fake-but-signature-valid\n%%EOF"
 
@@ -41,11 +42,13 @@ def test_upload_valid_pdf_succeeds(db_session, local_storage):
     try:
         response = client.post(
             "/api/v1/documents",
-            data={"organization_id": str(org.id), "uploaded_by_user_id": str(user.id)},
+            headers=auth_headers(user.id),
             files={"file": ("invoice.pdf", io.BytesIO(VALID_PDF), "application/pdf")},
         )
         assert response.status_code == 201
         body = response.json()
+        # organization_id/uploaded_by_user_id are derived from the
+        # authenticated token, not supplied by the client.
         assert body["organization_id"] == str(org.id)
         assert body["uploaded_by_user_id"] == str(user.id)
         assert body["original_filename"] == "invoice.pdf"
@@ -60,55 +63,39 @@ def test_upload_valid_pdf_succeeds(db_session, local_storage):
         teardown_overrides()
 
 
-def test_upload_unknown_organization_rejected(db_session, local_storage):
-    _, user = make_org_and_user(db_session)
+def test_upload_without_auth_header_rejected(db_session, local_storage):
+    """
+    Phase 10: replaces the old test_upload_unknown_organization_rejected /
+    test_upload_unknown_user_rejected / test_upload_user_from_different_
+    organization_rejected tests. Those tested a client-supplied
+    organization_id/uploaded_by_user_id request field being invalid or
+    inconsistent — that field no longer exists at all, so faking a bogus
+    org/user pairing is now structurally impossible rather than merely
+    rejected. The equivalent (and now stronger) property is: identity comes
+    exclusively from the authenticated token, and no request is accepted
+    without one.
+    """
     client = client_with_overrides(db_session, local_storage)
     try:
-        fake_org_id = "00000000-0000-0000-0000-000000000000"
         response = client.post(
             "/api/v1/documents",
-            data={"organization_id": fake_org_id, "uploaded_by_user_id": str(user.id)},
             files={"file": ("invoice.pdf", io.BytesIO(VALID_PDF), "application/pdf")},
         )
-        assert response.status_code == 404
+        assert response.status_code == 401
         assert db_session.query(Document).count() == 0
     finally:
         teardown_overrides()
 
 
-def test_upload_unknown_user_rejected(db_session, local_storage):
-    org, _ = make_org_and_user(db_session)
-    client = client_with_overrides(db_session, local_storage)
-    try:
-        fake_user_id = "00000000-0000-0000-0000-000000000000"
-        response = client.post(
-            "/api/v1/documents",
-            data={"organization_id": str(org.id), "uploaded_by_user_id": fake_user_id},
-            files={"file": ("invoice.pdf", io.BytesIO(VALID_PDF), "application/pdf")},
-        )
-        assert response.status_code == 404
-        assert db_session.query(Document).count() == 0
-    finally:
-        teardown_overrides()
-
-
-def test_upload_user_from_different_organization_rejected(db_session, local_storage):
-    """
-    A user belonging to Organization B must NOT be accepted with
-    organization_id belonging to Organization A.
-    """
-    org_a, _ = make_org_and_user(db_session, "Org A", "a@example.com")
-    org_b, user_b = make_org_and_user(db_session, "Org B", "b@example.com")
-
+def test_upload_with_invalid_token_rejected(db_session, local_storage):
     client = client_with_overrides(db_session, local_storage)
     try:
         response = client.post(
             "/api/v1/documents",
-            # org_a but user actually belongs to org_b
-            data={"organization_id": str(org_a.id), "uploaded_by_user_id": str(user_b.id)},
+            headers={"Authorization": "Bearer not-a-real-token"},
             files={"file": ("invoice.pdf", io.BytesIO(VALID_PDF), "application/pdf")},
         )
-        assert response.status_code == 400
+        assert response.status_code == 401
         assert db_session.query(Document).count() == 0
     finally:
         teardown_overrides()
@@ -120,7 +107,7 @@ def test_upload_wrong_extension_rejected(db_session, local_storage):
     try:
         response = client.post(
             "/api/v1/documents",
-            data={"organization_id": str(org.id), "uploaded_by_user_id": str(user.id)},
+            headers=auth_headers(user.id),
             files={"file": ("invoice.txt", io.BytesIO(b"not a pdf"), "text/plain")},
         )
         assert response.status_code == 400
@@ -141,7 +128,7 @@ def test_upload_oversized_file_rejected(db_session, local_storage, monkeypatch):
         oversized = b"%PDF-1.4\n" + (b"A" * (2 * 1024 * 1024))
         response = client.post(
             "/api/v1/documents",
-            data={"organization_id": str(org.id), "uploaded_by_user_id": str(user.id)},
+            headers=auth_headers(user.id),
             files={"file": ("invoice.pdf", io.BytesIO(oversized), "application/pdf")},
         )
         assert response.status_code == 400
@@ -156,7 +143,7 @@ def test_upload_empty_file_rejected(db_session, local_storage):
     try:
         response = client.post(
             "/api/v1/documents",
-            data={"organization_id": str(org.id), "uploaded_by_user_id": str(user.id)},
+            headers=auth_headers(user.id),
             files={"file": ("invoice.pdf", io.BytesIO(b""), "application/pdf")},
         )
         assert response.status_code == 400
@@ -172,7 +159,7 @@ def test_upload_fake_pdf_content_rejected(db_session, local_storage):
     try:
         response = client.post(
             "/api/v1/documents",
-            data={"organization_id": str(org.id), "uploaded_by_user_id": str(user.id)},
+            headers=auth_headers(user.id),
             files={
                 "file": (
                     "invoice.pdf",
@@ -183,7 +170,6 @@ def test_upload_fake_pdf_content_rejected(db_session, local_storage):
         )
         assert response.status_code == 400
         assert db_session.query(Document).count() == 0
-        # confirm nothing was left on disk either
         assert response.json()["error"]
     finally:
         teardown_overrides()
@@ -195,12 +181,12 @@ def test_upload_valid_pdf_with_unusual_mime_type_still_accepted(db_session, loca
     try:
         response = client.post(
             "/api/v1/documents",
-            data={"organization_id": str(org.id), "uploaded_by_user_id": str(user.id)},
+            headers=auth_headers(user.id),
             files={
                 "file": (
                     "invoice.pdf",
                     io.BytesIO(VALID_PDF),
-                    "application/octet-stream",  # unusual generic MIME
+                    "application/octet-stream",
                 )
             },
         )
@@ -215,7 +201,7 @@ def test_upload_path_traversal_filename_cannot_escape_storage(db_session, local_
     try:
         response = client.post(
             "/api/v1/documents",
-            data={"organization_id": str(org.id), "uploaded_by_user_id": str(user.id)},
+            headers=auth_headers(user.id),
             files={
                 "file": ("../../../etc/passwd.pdf", io.BytesIO(VALID_PDF), "application/pdf")
             },
@@ -235,7 +221,7 @@ def test_upload_excessively_long_filename_rejected(db_session, local_storage):
         long_name = ("a" * 300) + ".pdf"
         response = client.post(
             "/api/v1/documents",
-            data={"organization_id": str(org.id), "uploaded_by_user_id": str(user.id)},
+            headers=auth_headers(user.id),
             files={"file": (long_name, io.BytesIO(VALID_PDF), "application/pdf")},
         )
         assert response.status_code == 400
@@ -250,12 +236,38 @@ def test_error_response_never_exposes_internal_details(db_session, local_storage
     try:
         response = client.post(
             "/api/v1/documents",
-            data={"organization_id": str(org.id), "uploaded_by_user_id": str(user.id)},
+            headers=auth_headers(user.id),
             files={"file": ("invoice.txt", io.BytesIO(b"x"), "text/plain")},
         )
         body = response.json()
         assert set(body.keys()) == {"error"}
         assert "Traceback" not in body["error"]
         assert "/home/" not in body["error"]
+    finally:
+        teardown_overrides()
+
+
+def test_upload_two_users_same_token_different_orgs_stay_isolated(db_session, local_storage):
+    """
+    Phase 10 regression guard: two different authenticated users, each in
+    their own organization, uploading independently must each get a
+    document correctly attributed to their own org — never to the other's.
+    """
+    org_a, user_a = make_org_and_user(db_session, "Org A", "a@example.com")
+    org_b, user_b = make_org_and_user(db_session, "Org B", "b@example.com")
+    client = client_with_overrides(db_session, local_storage)
+    try:
+        resp_a = client.post(
+            "/api/v1/documents",
+            headers=auth_headers(user_a.id),
+            files={"file": ("invoice.pdf", io.BytesIO(VALID_PDF), "application/pdf")},
+        )
+        resp_b = client.post(
+            "/api/v1/documents",
+            headers=auth_headers(user_b.id),
+            files={"file": ("invoice.pdf", io.BytesIO(VALID_PDF), "application/pdf")},
+        )
+        assert resp_a.json()["organization_id"] == str(org_a.id)
+        assert resp_b.json()["organization_id"] == str(org_b.id)
     finally:
         teardown_overrides()
