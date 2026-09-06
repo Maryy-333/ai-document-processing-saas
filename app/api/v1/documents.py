@@ -13,7 +13,7 @@ import io
 import uuid
 
 from fastapi import APIRouter, Depends, File, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
@@ -29,6 +29,7 @@ from app.processing.validation import OversizedFileError, UploadValidationConfig
 from app.schemas.document import DocumentProcessingResponse, DocumentUploadResponse
 from app.schemas.review import InvoiceReviewResponse, InvoiceUpdateRequest, RejectRequest
 from app.services.document_service import UploadFileInput, upload_document
+from app.services.export_service import export_organization_invoices, export_single_invoice
 from app.services.review_service import (
     ApprovalBlockedByValidationError,
     approve_document,
@@ -108,6 +109,36 @@ async def upload(
         validation_config=validation_config,
     )
     return document
+
+
+def _file_response(export_file) -> Response:
+    return Response(
+        content=export_file.content,
+        media_type=export_file.media_type,
+        headers={"Content-Disposition": f'attachment; filename="{export_file.filename}"'},
+    )
+
+
+# Registered before the /{document_id}/... routes below as defensive
+# convention (static literal paths before parameterized ones), even though
+# "/documents/export/csv" (3 segments) and "/documents/{document_id}/export/
+# csv" (4 segments) don't actually collide given their different shapes.
+@router.get("/export/csv")
+async def export_organization_csv(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    export_file = export_organization_invoices(db, current_user.organization_id, fmt="csv")
+    return _file_response(export_file)
+
+
+@router.get("/export/xlsx")
+async def export_organization_xlsx(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    export_file = export_organization_invoices(db, current_user.organization_id, fmt="xlsx")
+    return _file_response(export_file)
 
 
 def get_ocr_engine(settings: Settings = Depends(get_settings)) -> OCREngine | None:
@@ -262,3 +293,27 @@ async def reject(
         updated_at=document.updated_at,
         validation=None,
     )
+
+
+@router.get("/{document_id}/export/csv")
+async def export_document_csv(
+    document_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    export_file = export_single_invoice(
+        db, document_id, current_user.organization_id, fmt="csv"
+    )
+    return _file_response(export_file)
+
+
+@router.get("/{document_id}/export/xlsx")
+async def export_document_xlsx(
+    document_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    export_file = export_single_invoice(
+        db, document_id, current_user.organization_id, fmt="xlsx"
+    )
+    return _file_response(export_file)
