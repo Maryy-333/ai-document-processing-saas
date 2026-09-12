@@ -1,7 +1,14 @@
 # --- Web framework ---
 fastapi==0.115.0
 uvicorn[standard]==0.30.6
-python-multipart==0.0.9
+# Phase 12: bumped from 0.0.9, which is affected by CVE-2024-53981 (High,
+# CVSS 7.5 - DoS via inefficient handling of malformed multipart/form-data
+# boundary data) - directly relevant since this app accepts file uploads.
+# 0.0.28 also picks up fixes for PYSEC-2026-3038 (preamble/epilogue DoS) and
+# CVE-2026-42561 (unbounded part headers). Not pinning the very latest
+# release (0.0.32 at time of writing) since 0.0.28 already contains every
+# specific fix found relevant here and later versions are perf-only changes.
+python-multipart==0.0.28
 
 # --- Configuration & validation ---
 pydantic==2.9.2

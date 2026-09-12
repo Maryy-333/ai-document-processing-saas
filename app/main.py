@@ -25,9 +25,17 @@ def create_app() -> FastAPI:
         title=settings.app_name,
         version="0.1.0",
         description="AI-assisted invoice data extraction with mandatory human review.",
+        debug=settings.debug,
     )
 
     register_error_handlers(app)
+
+    @app.middleware("http")
+    async def add_security_headers(request, call_next):
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        return response
 
     app.include_router(health_router, prefix=settings.api_v1_prefix)
     app.include_router(auth_router, prefix=settings.api_v1_prefix)
